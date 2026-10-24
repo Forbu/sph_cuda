@@ -37,6 +37,7 @@
 #include <cuda_runtime.h>
 #include <cub/cub.cuh>
 
+#define HD __host__ __device__ __forceinline__
 #define CK(x) do{ cudaError_t _e=(x); if(_e!=cudaSuccess){                     \
     fprintf(stderr,"CUDA error %s:%d  %s\n",__FILE__,__LINE__,                 \
             cudaGetErrorString(_e)); exit(1);} }while(0)
