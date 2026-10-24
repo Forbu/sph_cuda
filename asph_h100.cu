@@ -50,6 +50,7 @@ constexpr float INV_DX = 1.0f/DX, INV_DY = 1.0f/DY, INV_DZ = 1.0f/DZ;
 constexpr float V_CELL = DX*DY*DZ;
 
 constexpr float H_SUP   = 1.0f;   // support = 2*H_SUP cells = 2 cells
+                                  // NOTE: kernel metric normalisation assumes 1.0
 constexpr int   STENCIL = 2;      // int(2*H_SUP); full spline sampled
 constexpr float INV_H   = 1.0f/H_SUP;
 constexpr float SIGMA   = 0.31830988618f;   // 1/pi, 3-D spline normalisation
@@ -83,6 +84,12 @@ constexpr float PMASS = RHO0*V_CELL;        // 1.1616e8 kg per particle (const)
 constexpr float ALPHA_AV = 0.2f;
 constexpr float H_AV     = 2.0f*DZ;         // 200 m dissipation length
 
+// Rayleigh sponge at the top of the column (reflective-z would otherwise
+// bounce updrafts back and pump energy into the domain).
+constexpr float SPONGE_SIGMA = 0.05f;   // peak damping rate [1/s]
+constexpr float SPONGE_FRAC  = 0.15f;   // depth as fraction of Lz
+constexpr float DTHDT_CAP    = 1.0f;    // |dtheta/dt| clamp [K/s]
+
 // ---------------------------------------------------------------------------
 //  Surface forcing: bulk aerodynamic formula, dry-ish land at noon.
 //  |V|=7 m/s imposed large-scale wind, moisture availability beta=0.2,
@@ -94,7 +101,7 @@ constexpr float C_H     = 1.2e-3f;
 constexpr float C_E     = 1.2e-3f;
 constexpr float BETA_MOIST = 0.20f;
 constexpr float V_BG    = 7.0f;
-constexpr float DTS_SKIN = 12.0f;
+constexpr float DTS_SKIN = 3.15f;   // max ground temp TH0+DTS_SKIN = 303.15 K (30 C)
 constexpr float RAMP    = 3600.0f;
 
 // ---------------------------------------------------------------------------
@@ -319,7 +326,10 @@ void kernel_density(const float4* __restrict__ pos,
         }
     }
     // S1 = m*SUM W, S2 = m*SUM W/rho_j  =>  rho = S1/S2
-    rhoNew[i] = S2 > 1e-20f ? S1/S2 : rho_ref(pi.z);
+    // clamp: under clumping the summation density can overshoot N*ref and
+    // under isolation collapse; both feed an unbounded pressure feedback
+    float rr = S2 > 1e-20f ? S1/S2 : rho_ref(pi.z);
+    rhoNew[i] = fminf(fmaxf(rr, 0.5f*rho_ref(pi.z)), 2.0f*rho_ref(pi.z));
 }
 
 // ===========================================================================
@@ -343,8 +353,11 @@ __global__ void kernel_eos_micro(float4* __restrict__ thq,
     float r  = fmaxf(rho[i], 1e-3f);
 
     // perturbation pressure from the weakly-compressible EOS about the
-    // analytic hydrostatic reference
-    float ppr = CS*CS*(r - rho_ref(z));
+    // analytic hydrostatic reference; density excursion clamped so a
+    // clumped/isolated particle cannot generate MPa-scale pressure spikes
+    float dd = r - rho_ref(z);
+    dd = fminf(fmaxf(dd, -0.3f*rho_ref(z)), 0.3f*rho_ref(z));
+    float ppr = CS*CS*dd;
     float pfl = fmaxf(pres_ref(z) + ppr, 1.0f);
     float Pi  = __powf(pfl/P0, R_D/CP);
 
@@ -454,7 +467,9 @@ void kernel_momentum(const float4* __restrict__ pos,
                     float rhoj = fmaxf(__ldg(&rho[j]),1e-3f);
                     float prj  = __ldg(&prs[j]);
 
-                    // difference-form pressure term
+                    // difference-form pressure term (weaker stiff restoring
+                    // on density noise than the symmetric form; empirically
+                    // required for stability of this WCSPH setup)
                     float dp   = (prj - pri)/(rhoi*rhoj);
 
                     // Monaghan bulk viscosity, gated on approach
@@ -489,9 +504,29 @@ void kernel_momentum(const float4* __restrict__ pos,
     az += GRAV*((thv - thvr)/thvr - ti.z);
 
     acc[i]   = make_float4(ax,ay,az,0.f);
-    // viscous heating: -v.a_visc/(cp Pi)  [K/s]
+    // viscous heating: -v.a_visc/(cp Pi)  [K/s], clamped to a physical rate
     float Pi = __powf(fmaxf(pres_ref(pi.z)+pri,1.f)/P0, R_D/CP);
-    dthdt[i] = -(vi.x*avx + vi.y*avy + vi.z*avz)/(CP*Pi);
+    float dth = -(vi.x*avx + vi.y*avy + vi.z*avz)/(CP*Pi);
+    dthdt[i] = fminf(fmaxf(dth,-DTHDT_CAP),DTHDT_CAP);
+}
+
+// ===========================================================================
+//  Rayleigh sponge — damps w in the top SPONGE_FRAC of the column with an
+//  unconditionally-stable implicit factor 1/(1+sigma*dt). Prevents the
+//  reflective top boundary from bouncing updraft energy back into the box.
+// ===========================================================================
+__global__ void kernel_sponge(float4* __restrict__ pos,
+                              float4* __restrict__ vel,
+                              int N,float dt,float Lz)
+{
+    int i = blockIdx.x*blockDim.x + threadIdx.x;
+    if (i >= N) return;
+    float z = pos[i].z;
+    float zs = (1.f - SPONGE_FRAC)*Lz;
+    if (z < zs) return;
+    float t  = (z - zs)/(SPONGE_FRAC*Lz);
+    float sg = SPONGE_SIGMA*t*t;
+    vel[i].z *= 1.f/(1.f + sg*dt);
 }
 
 // ===========================================================================
@@ -987,6 +1022,9 @@ int main(int argc,char**argv)
         // ---- 9. second half kick -----------------------------------------
         kernel_kick<<<BPB,TPB>>>(vel,acc,N,0.5f*dt);
 
+        // ---- 9b. Rayleigh sponge (top of column) --------------------------
+        kernel_sponge<<<BPB,TPB>>>(pos,vel,N,dt,Lz);
+
         // ---- 10. rain advection ------------------------------------------
         tic();
         {
@@ -999,8 +1037,8 @@ int main(int argc,char**argv)
 
         simt += dt;  since_sort += dt;
 
-        // ---- 11. CLOSED-LOOP CFL ----------------------------------------
-        if (step % cfg.cfl_interval == 0){
+        // ---- 11. CLOSED-LOOP CFL (checked EVERY step) ---------------------
+        {
             tic();
             CK(cudaMemsetAsync(gmax,0,3*sizeof(float)));
             kernel_max_vel<<<1024,TPB>>>(vel,N,gmax);
@@ -1027,7 +1065,10 @@ int main(int argc,char**argv)
                     return 2;
                 }
                 kernel_clamp_vel<<<1024,TPB>>>(vel,N,0.5f*CS);
-                adopt = dt_floor;
+                // post-clamp all |v| <= 0.5*CS, so the worst-case CFL-required
+                // dt is CFL*Dmin/(CS*(1+0.5)); never adopt anything above it
+                adopt = fmaxf(dt_floor,
+                              cfg.cfl*fminf(fminf(DX,DY),DZ)/(1.5f*CS)*0.90f);
             } else if (adopt < 0.98f*dt){ trips=0; }
             dt = adopt;
 
