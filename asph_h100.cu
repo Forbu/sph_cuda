@@ -903,9 +903,9 @@ int main(int argc,char**argv)
     double wall0=now_s(),wall_report=wall0,sim_report=0.0;
     bool   prof=false;
 
-    auto tic=[&](){ if(prof) CK(cudaEventRecord(evA)); };
     cudaEvent_t evA,evB;
     CK(cudaEventCreate(&evA)); CK(cudaEventCreate(&evB));
+    auto tic=[&](){ if(prof) CK(cudaEventRecord(evA)); };
     auto toc=[&](int slot){
         if(!prof) return;
         CK(cudaEventRecord(evB)); CK(cudaEventSynchronize(evB));
