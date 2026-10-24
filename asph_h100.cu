@@ -875,7 +875,7 @@ int main(int argc,char**argv)
     CK(cudaStreamSynchronize(0));
 
     // ---- initial force evaluation (needed for KDK) ------------------------
-    kernel_eos_micro<<<BPB,TPB>>>(thq,pos,rhoIn,prs,rainIn,cfg.nx,cfg.ny,cfg.nz,dt);
+    kernel_eos_micro<<<BPB,TPB>>>(thq,pos,rhoIn,prs,rainIn,cfg.nx,cfg.ny,cfg.nz,N,dt);
     kernel_momentum<<<BPB,TPB>>>(pos,vel,thq,rhoIn,prs,cellRange,acc,dthdt,
                                  cfg.nx,cfg.ny,cfg.nz,N);
     CK(cudaStreamSynchronize(0));
