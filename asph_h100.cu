@@ -126,35 +126,35 @@ __device__ __forceinline__ float dw3(float q){          // dW/dq
     float t = QMAX - q;  return -0.75f*SIGMA*t*t;
 }
 // --- analytic reference state ----------------------------------------------
-__device__ __forceinline__ float theta_ref(float z){
-    return TH0*__expf(N2*z/GRAV);
+HD float theta_ref(float z){
+    return TH0*expf(N2*z/GRAV);
 }
-__device__ __forceinline__ float exner_ref(float z){
+HD float exner_ref(float z){
     const float A = GRAV*GRAV/(CP*TH0*N2);
-    return 1.0f - A*(1.0f - __expf(-N2*z/GRAV));
+    return 1.0f - A*(1.0f - expf(-N2*z/GRAV));
 }
-__device__ __forceinline__ float pres_ref(float z){
-    return P0*__powf(exner_ref(z), CP/R_D);
+HD float pres_ref(float z){
+    return P0*powf(exner_ref(z), CP/R_D);
 }
-__device__ __forceinline__ float rho_ref(float z){
+HD float rho_ref(float z){
     return pres_ref(z)/(R_D*theta_ref(z)*exner_ref(z));
 }
-__device__ __forceinline__ float qv_ref(float z){
-    float q = QV0*__expf(-z/2500.0f);
+HD float qv_ref(float z){
+    float q = QV0*expf(-z/2500.0f);
     float d = fmaxf(z - 5000.0f, 0.0f);
-    return q*__expf(-d/1000.0f);
+    return q*expf(-d/1000.0f);
 }
 // --- thermodynamics --------------------------------------------------------
-__device__ __forceinline__ float esat(float T){
+HD float esat(float T){
     float Tc = T - 273.15f;
-    return 611.2f*__expf(17.67f*Tc/(Tc + 243.5f));
+    return 611.2f*expf(17.67f*Tc/(Tc + 243.5f));
 }
-__device__ __forceinline__ float qsat(float T, float p){
+HD float qsat(float T, float p){
     float es = fminf(esat(T), 0.5f*p);
     float den = p - 0.378f*es;
     return den > 1.0f ? 0.622f*es/den : 0.0f;
 }
-__device__ __forceinline__ float dqsdT(float T, float es, float p){
+HD float dqsdT(float T, float es, float p){
     // dq_s/dT for q_s = 0.622 e/(p - 0.378 e), e Magnus
     float Tc = T - 273.15f;
     float d  = Tc + 243.5f;
@@ -162,35 +162,6 @@ __device__ __forceinline__ float dqsdT(float T, float es, float p){
     float den = p - 0.378f*es;
     return 0.622f*p*desdT/(den*den);
 }
-__device__ __forceinline__ uint32_t part1by2_10(uint32_t n){
-    n &= 0x000003ffu;
-    n = (n ^ (n << 16)) & 0xff0000ffu;
-    n = (n ^ (n <<  8)) & 0x0300f00fu;
-    n = (n ^ (n <<  4)) & 0x030c30c3u;
-    n = (n ^ (n <<  2)) & 0x09249249u;
-    return n;
-}
-__device__ __forceinline__ uint32_t morton3(uint32_t x,uint32_t y,uint32_t z){
-    return part1by2_10(x) | (part1by2_10(y) << 1) | (part1by2_10(z) << 2);
-}
-__device__ __forceinline__ float hash_noise(int i,int j,int k){
-    uint32_t h = (uint32_t)i*374761393u + (uint32_t)j*668265263u
-               + (uint32_t)k*2246822519u;
-    h = (h ^ (h >> 13)) * 1274126177u;  h ^= h >> 16;
-    return (float)(h & 0x00ffffffu)*(1.0f/16777215.0f) - 0.5f;
-}
-__device__ __forceinline__ int cell_of(const float4& p,int nx,int ny,int nz){
-    int ix = (int)floorf(p.x*INV_DX); ix = min(max(ix,0),nx-1);
-    int iy = (int)floorf(p.y*INV_DY); iy = min(max(iy,0),ny-1);
-    int iz = (int)floorf(p.z*INV_DZ); iz = min(max(iz,0),nz-1);
-    return (iz*ny + iy)*nx + ix;
-}
-__device__ __forceinline__ void atomicMaxF(float* a, float v){
-    atomicMax((unsigned int*)a, __float_as_uint(v));
-}
-// periodic wrap for x,y ; clamp for z
-__device__ __forceinline__ int wrapx(int i,int nx){ return i<0 ? i+nx : (i>=nx ? i-nx : i); }
-__device__ __forceinline__ int wrapy(int i,int ny){ return i<0 ? i+ny : (i>=ny ? i-ny : i); }
 
 // ===========================================================================
 //  INIT — lattice + analytic sounding. rho initialised to rho_ref so the
