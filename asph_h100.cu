@@ -508,7 +508,7 @@ __global__ void kernel_kick(float4* __restrict__ vel,
     vel[i] = v;
 }
 __global__ void kernel_drift(float4* __restrict__ pos,
-                             const float4* __restrict__ vel,
+                             float4* __restrict__ vel,
                              int N,float dt,float Lx,float Ly,float Lz)
 {
     int i = blockIdx.x*blockDim.x + threadIdx.x;
@@ -970,7 +970,7 @@ int main(int argc,char**argv)
 
         // ---- 6. EOS + microphysics ---------------------------------------
         tic();
-        kernel_eos_micro<<<BPB,TPB>>>(thq,pos,rhoIn,prs,rainIn,cfg.nx,cfg.ny,cfg.nz,dt);
+        kernel_eos_micro<<<BPB,TPB>>>(thq,pos,rhoIn,prs,rainIn,cfg.nx,cfg.ny,cfg.nz,N,dt);
         toc(T_EOS);
 
         // ---- 7. momentum -------------------------------------------------
