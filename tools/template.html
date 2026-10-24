@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ASP-H100 SPH Simulation — Coarse Field Visualization</title>
+<style>
+ :root{--bg:#101418;--panel:#1a2027;--ink:#dce3ea;--muted:#8a97a5;--accent:#4fc3f7;}
+ *{box-sizing:border-box;margin:0;padding:0}
+ body{background:var(--bg);color:var(--ink);font:14px/1.45 'Segoe UI',system-ui,sans-serif;padding:18px}
+ h1{font-size:20px;font-weight:600}
+ .sub{color:var(--muted);font-size:12.5px;margin-bottom:14px}
+ .wrap{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+ @media(max-width:1000px){.wrap{grid-template-columns:1fr}}
+ .card{background:var(--panel);border:1px solid #263039;border-radius:10px;padding:14px}
+ .card h2{font-size:14px;font-weight:600;margin-bottom:8px;color:var(--accent)}
+ canvas{width:100%;image-rendering:pixelated;border-radius:6px;background:#0b0e11}
+ .ctl{display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin:14px 0}
+ button{background:#26313b;color:var(--ink);border:1px solid #33414d;border-radius:6px;
+        padding:6px 14px;cursor:pointer;font-size:13px}
+ button:hover{background:#31404c}
+ button.play{min-width:74px}
+ select,input[type=range]{accent-color:var(--accent)}
+ select{background:#26313b;color:var(--ink);border:1px solid #33414d;border-radius:6px;padding:5px 8px;font-size:13px}
+ input[type=range]{width:180px}
+ label{color:var(--muted);font-size:12.5px}
+ .t{font-variant-numeric:tabular-nums;font-weight:600;color:var(--accent);min-width:70px}
+ .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-top:12px}
+ .stat{background:#12181e;border:1px solid #263039;border-radius:8px;padding:8px 10px}
+ .stat .v{font-size:16px;font-weight:600;font-variant-numeric:tabular-nums}
+ .stat .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
+ .warn{margin-top:14px;border-left:3px solid #ffb74d;background:#241c10;padding:8px 12px;
+       border-radius:0 6px 6px 0;font-size:12.5px;color:#ffd699}
+ .cbar{display:flex;align-items:center;gap:8px;margin-top:6px;font-size:11px;color:var(--muted)}
+ .cbar canvas{width:120px;height:10px;border-radius:3px}
+</style>
+</head>
+<body>
+<h1>ASP-H100 — SPH Cloud Simulation</h1>
+<div class="sub">Coarse-grid dumps (13×13×22, 1-km base grid) · domain 128 × 128 × 6.4 km ·
+H100 run · 11 snapshots, t = 60 s → 2400 s. Left: horizontal slice · Right: vertical x–z cross-section (y = center).</div>
+
+<div class="ctl">
+ <button class="play" id="btnPlay">▶ Play</button>
+ <label>Frame <span class="t" id="tLabel">0.0 s</span></label>
+ <input type="range" id="tSlider" min="0" max="__NMAX__" value="0">
+ <label>Field</label>
+ <select id="field">
+  <option value="w">w (vertical velocity)</option>
+  <option value="ql">ql (liquid water)</option>
+  <option value="dtheta">θ′ (pot. temp. anomaly)</option>
+  <option value="qv">qv (vapour)</option>
+ </select>
+ <label>Height</label>
+ <input type="range" id="zSlider" min="0" max="__ZMAX__" value="__ZDEF__">
+ <span class="t" id="zLabel" style="color:var(--muted)"></span>
+</div>
+
+<div class="wrap">
+ <div class="card"><h2>Horizontal slice (z-level)</h2>
+   <canvas id="cvH" width="520" height="520"></canvas>
+   <div class="cbar"><canvas id="cbH" width="120" height="10"></canvas><span id="cbHt"></span></div>
+ </div>
+ <div class="card"><h2>Vertical cross-section x–z (y = centre)</h2>
+   <canvas id="cvV" width="260" height="520"></canvas>
+   <div class="cbar"><canvas id="cbV" width="120" height="10"></canvas><span id="cbVt"></span></div>
+ </div>
+</div>
+
+<div class="stats" id="stats"></div>
+<div class="warn">⚠ Global max |w| grows past ~100 m/s after t≈2100 s — the run went numerically unstable
+(CFL violated), which likely ended the simulation at t = 2400 s. Treat late frames with caution.</div>
+
+<script>
+const D=__DATA__;
+const CX=D.cx, CY=D.cy, CZ=D.cz, NFR=D.times.length;
+const FIELD_UNIT={w:'m/s',ql:'kg/kg',qv:'kg/kg',dtheta:'K'};
+let cur=0, field='w', zlev=Math.floor(CZ/2), timer=null;
+
+function F(f,fr){ if(f!=='dtheta') return D[f][fr];
+  const th=D.theta[fr],out=[];
+  for(let k=0;k<CZ;k++){out.push([]);
+    for(let j=0;j<CY;j++){out[k].push([]);
+      for(let i=0;i<CX;i++){const v=th[k][j][i];out[k][j].push(v===0?NaN:v-D.theta_ref);}}}
+  return out;}
+
+function range(f){ let mn=1e30,mx=-1e30;
+  for(let fr=0;fr<NFR;fr++){const a=F(f,fr);
+    for(let k=0;k<CZ;k++)for(let j=0;j<CY;j++)for(let i=0;i<CX;i++){
+      const v=a[k][j][i]; if(!isNaN(v)){if(v<mn)mn=v;if(v>mx)mx=v;}}}
+  return [mn,mx];}
+
+function viridis(t){t=Math.max(0,Math.min(1,t));
+  const stops=[[68,1,84],[59,82,139],[33,145,140],[94,201,98],[253,231,37]];
+  const s=t*(stops.length-1),i=Math.min(stops.length-2,Math.floor(s)),f=s-i;
+  return [0,1,2].map(c=>Math.round(stops[i][c]+f*(stops[i+1][c]-stops[i][c])));}
+
+function diverge(t){t=Math.max(0,Math.min(1,t));
+  const stops=[[59,76,192],[120,170,255],[245,245,245],[255,150,90],[183,28,28]];
+  const s=t*(stops.length-1),i=Math.min(stops.length-2,Math.floor(s)),f=s-i;
+  return [0,1,2].map(c=>Math.round(stops[i][c]+f*(stops[i+1][c]-stops[i][c])));}
+
+function cmap(f){return (f==='w')?diverge:viridis;}
+
+function drawGrid(cv,a,mn,mx,kmax,jmax,dim){ // dim='h': a[k][j][i] slice at fixed k? handled by caller
+  const ctx=cv.getContext('2d'),W=cv.width,H=cv.height;
+  const cw=W/a[0].length,ch=H/a.length;
+  const cm=cmap(field),nan=[70,70,70];
+  for(let r=0;r<a.length;r++)for(let c=0;c<a[r].length;c++){
+    const v=a[r][c]; let col=nan;
+    if(!isNaN(v)){let t=(v-mn)/((mx-mn)||1); if(field==='w'){t=(t-0.5)*1.15+0.5;} col=cm(t);}
+    ctx.fillStyle=`rgb(${col[0]},${col[1]},${col[2]})`;
+    ctx.fillRect(c*cw,r*ch,Math.ceil(cw),Math.ceil(ch));}}
+
+function stats(fr){
+  const ql=D.ql[fr],w=D.w[fr],th=D.theta[fr];
+  let cloud=0,tot=0,qlmax=0,wmax=0,thsum=0,n=0;
+  for(let k=0;k<CZ;k++)for(let j=0;j<CY;j++)for(let i=0;i<CX;i++){
+    tot++;
+    if(ql[k][j][i]>1e-5)cloud++;
+    if(ql[k][j][i]>qlmax)qlmax=ql[k][j][i];
+    if(Math.abs(w[k][j][i])>wmax)wmax=Math.abs(w[k][j][i]);
+    if(th[k][j][i]!==0){thsum+=th[k][j][i];n++;}}
+  const s=document.getElementById('stats');
+  const cell=(v,k)=>`<div class="stat"><div class="v">${v}</div><div class="k">${k}</div></div>`;
+  s.innerHTML=cell((100*cloud/tot).toFixed(1)+'%','cloudy coarse cells')+
+              cell((qlmax*1e3).toFixed(3)+' g/kg','max liquid water')+
+              cell(wmax.toFixed(1)+' m/s','max |w|')+
+              cell((thsum/n).toFixed(2)+' K','mean θ (filled)')+
+              cell(fr+1+' / '+NFR,'snapshot');
+}
+
+function render(){
+  const t=D.times[cur];
+  document.getElementById('tLabel').textContent=t.toFixed(0)+' s';
+  document.getElementById('tSlider').value=cur;
+  const zkm=(zlev*D.dz/1000);
+  document.getElementById('zLabel').textContent='z ≈ '+zkm.toFixed(1)+' km (level '+zlev+')';
+  const a=F(field,cur);
+  const [mn,mx]=RANGES[field];
+  // horizontal slice at zlev
+  const hsl=a[zlev];
+  drawGrid(document.getElementById('cvH'),hsl,mn,mx);
+  // vertical cross-section y=centre: build [k][i]
+  const yc=Math.floor(CY/2),vsl=[];
+  for(let k=0;k<CZ;k++){vsl.push([]);for(let i=0;i<CX;i++)vsl[k].push(a[k][yc][i]);}
+  drawGrid(document.getElementById('cvV'),vsl,mn,mx);
+  document.getElementById('cbHt').textContent=mn.toPrecision(3)+' → '+mx.toPrecision(3)+' '+FIELD_UNIT[field];
+  document.getElementById('cbVt').textContent=mn.toPrecision(3)+' → '+mx.toPrecision(3)+' '+FIELD_UNIT[field];
+  cbar('cbH',field);cbar('cbV',field);
+  stats(cur);}
+
+const RANGES={};
+['w','ql','qv','dtheta'].forEach(f=>RANGES[f]=range(f));
+
+
+document.getElementById('zSlider').max=CZ-1;
+
+document.getElementById('btnPlay').onclick=()=>{
+  const b=document.getElementById('btnPlay');
+  if(timer){clearInterval(timer);timer=null;b.textContent='▶ Play';}
+  else{timer=setInterval(()=>{cur=(cur+1)%NFR;render();},450);b.textContent='❚❚ Pause';}};
+document.getElementById('tSlider').oninput=e=>{cur=+e.target.value;render();};
+document.getElementById('zSlider').oninput=e=>{zlev=+e.target.value;render();};
+document.getElementById('field').onchange=e=>{field=e.target.value;render();};
+
+// colorbars
+function cbar(id,f){const cv=document.getElementById(id),ctx=cv.getContext('2d'),cm=cmap(f);
+  for(let x=0;x<cv.width;x++){const col=cm(x/(cv.width-1));
+    ctx.fillStyle=`rgb(${col[0]},${col[1]},${col[2]})`;ctx.fillRect(x,0,1,cv.height);}}
+cbar('cbH',field);cbar('cbV',field);
+
+render();
+</script>
+</body>
+</html>
