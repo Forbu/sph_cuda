@@ -163,6 +163,39 @@ HD float dqsdT(float T, float es, float p){
     return 0.622f*p*desdT/(den*den);
 }
 
+// ---------------------------------------------------------------------------
+//  Device helpers  (must appear above first use)
+// ---------------------------------------------------------------------------
+__device__ __forceinline__ uint32_t part1by2_10(uint32_t n){
+    n &= 0x000003ffu;
+    n = (n ^ (n << 16)) & 0xff0000ffu;
+    n = (n ^ (n <<  8)) & 0x0300f00fu;
+    n = (n ^ (n <<  4)) & 0x030c30c3u;
+    n = (n ^ (n <<  2)) & 0x09249249u;
+    return n;
+}
+__device__ __forceinline__ uint32_t morton3(uint32_t x,uint32_t y,uint32_t z){
+    return part1by2_10(x) | (part1by2_10(y) << 1) | (part1by2_10(z) << 2);
+}
+__device__ __forceinline__ float hash_noise(int i,int j,int k){
+    uint32_t h = (uint32_t)i*374761393u + (uint32_t)j*668265263u
+               + (uint32_t)k*2246822519u;
+    h = (h ^ (h >> 13)) * 1274126177u;  h ^= h >> 16;
+    return (float)(h & 0x00ffffffu) * (1.0f/16777215.0f) - 0.5f;
+}
+__device__ __forceinline__ int cell_of(const float4& p,int nx,int ny,int nz){
+    int ix = (int)floorf(p.x*INV_DX); ix = min(max(ix,0),nx-1);
+    int iy = (int)floorf(p.y*INV_DY); iy = min(max(iy,0),ny-1);
+    int iz = (int)floorf(p.z*INV_DZ); iz = min(max(iz,0),nz-1);
+    return (iz*ny + iy)*nx + ix;
+}
+__device__ __forceinline__ int wrapx(int i,int n){ i %= n; return i<0 ? i+n : i; }
+__device__ __forceinline__ int wrapy(int i,int n){ i %= n; return i<0 ? i+n : i; }
+// atomicMax on non-negative floats via monotonic IEEE bit order
+__device__ __forceinline__ void atomicMaxF(float* addr,float val){
+    atomicMax((unsigned int*)addr,__float_as_uint(val));
+}
+
 // ===========================================================================
 //  INIT — lattice + analytic sounding. rho initialised to rho_ref so the
 //  first Shepard normalisation returns rho_ref exactly.
