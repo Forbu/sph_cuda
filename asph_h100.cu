@@ -853,7 +853,7 @@ int main(int argc,char**argv)
     CK(cudaStreamSynchronize(0));
 
     // initial audit
-    CK(cudaMemset(h_tot,0,sizeof(h_tot)));
+    std::memset(h_tot,0,sizeof(h_tot));
     { double* d_tot=nullptr; CK(cudaMalloc(&d_tot,6*sizeof(double)));
       CK(cudaMemset(d_tot,0,6*sizeof(double)));
       kernel_audit<<<1024,TPB>>>(pos,vel,thq,d_tot,N);
